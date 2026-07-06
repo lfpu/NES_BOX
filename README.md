@@ -166,6 +166,7 @@ AMOLedNES/
 | BAT Control | 16 | 电池供电保持 |
 | BAT ADC | 17 | 电池电压检测 |
 | Key BAT | 15 | 电源按键 |
+| MOTO_PIN_EXIO | 7 | 震动马达使用扩展IO 7
 
 ## 震动系统架构
 
