@@ -250,3 +250,7 @@ Core 1 (模拟器):   nofrendo 阻塞循环 → 视频缩放输出 + APU 音频
 震动:   damageDetector → nes_getcontextptr() RAM 监控 → TCA9554 I2C → 马达驱动
 联机:   ESP-NOW → netplay_sync_frame() → 双人输入合并
 ```
+
+## 贡献者
+
+ 感谢军火提供友人：<a href="https://github.com/Fineman007">Fineman007</a>
