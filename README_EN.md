@@ -188,7 +188,7 @@ Core 1 (Emulator, ~60fps):
 I2C: TCA9554 exclusively on I2C_NUM_0 (GPIO 47/48), same-core serial with touch I2C, no contention
 ```
 
-### Supported Games (game_profiles.h)
+### Vibration Supported Games (game_profiles.h)
 
 | Genre | Games |
 |-------|-------|

@@ -186,7 +186,7 @@ Core 1（模拟器，~60fps）:
 I2C: TCA9554 独占 I2C_NUM_0 (GPIO 47/48)，与触摸 I2C 同核串行，无竞争
 ```
 
-### 支持的游戏（game_profiles.h）
+### 震动支持的游戏（game_profiles.h）
 
 | 类型 | 游戏 |
 |------|------|
