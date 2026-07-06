@@ -55,13 +55,20 @@ bool NESLauncher::loadAndRun(const String& romPath)
     g_padState = 0;
     g_quitRequested = false;
 
+    const char* full = _romPath.c_str();
+    const char* base = strrchr(full, '/');
+    base = base ? (base + 1) : full;
+    const char* base2 = strrchr(base, '\\');
+    if (base2) base = base2 + 1;
+    damageDetector_setRom(base);
+
     BaseType_t ret = xTaskCreatePinnedToCore(
         _emuTaskFunc,
         "nes_emu",
         32768,        // 32KB stack
         this,
         5,            // priority
-        &_emuTaskHandle,
+        (TaskHandle_t*)&_emuTaskHandle,
         1             // Core 1
     );
 
@@ -77,33 +84,41 @@ bool NESLauncher::loadAndRun(const String& romPath)
 // ===================== Stop =====================
 void NESLauncher::stop()
 {
-    if (!_running) {
-        // nofrendo already exited (e.g., via pause menu quit)
-        // Still need to clean up OSD resources
-        nofrendo_osd_cleanup();
+    if (!_running && !_emuTaskHandle) {
         return;
     }
 
     Serial.println("[NES] Stopping...");
 
-    // Signal nofrendo to quit via the event system
+    // Signal nofrendo to quit via the event system.
+    // The emulator should exit on its own; avoid hard-killing the task.
     g_quitRequested = true;
     _running = false;
 
-    // Wait for emulation task to finish (up to 3 seconds)
-    if (_emuTaskHandle) {
-        for (int i = 0; i < 150; i++) {
-            if (eTaskGetState(_emuTaskHandle) == eDeleted ||
-                eTaskGetState(_emuTaskHandle) == eReady) {
+    // ★ 一次读到局部变量然后立即清空，防止 _emuLoop() 在 Core 1 置 NULL 后
+    // eTaskGetState 收到 NULL 指针 → assert 崩溃
+    TaskHandle_t emuTask = _emuTaskHandle;
+    _emuTaskHandle = nullptr;
+
+    // Wait for the emulation task to finish gracefully.
+    if (emuTask) {
+        for (int i = 0; i < 300; i++) {
+            eTaskState state = eTaskGetState(emuTask);
+            if (state == eDeleted || state == eReady) {
                 break;
             }
-            vTaskDelay(pdMS_TO_TICKS(20));
+            vTaskDelay(pdMS_TO_TICKS(10));
         }
-        _emuTaskHandle = nullptr;
+
+        eTaskState state = eTaskGetState(emuTask);
+        if (state == eDeleted || state == eReady) {
+            // emuTask was our local copy; _emuTaskHandle already cleared above
+        } else {
+            Serial.println("[NES] emu task did not exit gracefully within timeout");
+        }
     }
 
-    nofrendo_osd_cleanup();
-    Serial.println("[NES] Stopped");
+    Serial.println("[NES] Stop request issued");
 }
 
 // ===================== Button state =====================
@@ -137,19 +152,24 @@ void NESLauncher::_emuLoop()
     Serial.printf("[NES] Emulation started on core %d\n", xPortGetCoreID());
     Serial.printf("[NES] ROM: %s\n", _romPath.c_str());
 
-    // Reset damage detector for the new game session
-    damageDetector_reset();
+    const char* full = _romPath.c_str();
+    const char* base = strrchr(full, '/');
+    base = base ? (base + 1) : full;
+    const char* base2 = strrchr(base, '\\');
+    if (base2) base = base2 + 1;
+    Serial.printf("[NES] ROM basename: %s\n", base);
 
-    // Build argv for nofrendo_main
     char romPathCStr[512];
     strncpy(romPathCStr, _romPath.c_str(), sizeof(romPathCStr) - 1);
     romPathCStr[sizeof(romPathCStr) - 1] = '\0';
-
-    char* argv[1];
-    argv[0] = romPathCStr;
+    char* argv[1] = { romPathCStr };
 
     int ret = nofrendo_main(1, argv);
-
     Serial.printf("[NES] nofrendo_main returned %d\n", ret);
+
+    // ★ 从游戏 EXIT 回来时，第一时间清理
+    nofrendo_osd_cleanup();
+
     _running = false;
+    _emuTaskHandle = nullptr;   // 清掉悬空句柄
 }

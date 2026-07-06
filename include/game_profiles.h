@@ -1,20 +1,3 @@
-/*
- * game_profiles.h — Game health-value address database for damage detection
- *
- * Each entry maps a ROM filename substring to the NES RAM address ($0000-$07FF)
- * where the player's health/lives value is stored.
- *
- * Address sources: Data Crystal (datacrystal.tcrf.net), RomDetectives Wiki,
- *                  Game Genie code analysis, hp_scan.c field testing.
- *
- * Adding a new game:
- *   1. Find the health address using hp_scan.c or FCEUX memory viewer
- *   2. Add an entry: { "Name Substr", 0xADDR },
- *   3. The substring is matched case-sensitively against the ROM filename
- *
- * Sentinel: { NULL, 0 } must remain last
- */
-
 #ifndef GAME_PROFILES_H
 #define GAME_PROFILES_H
 
@@ -22,74 +5,72 @@
 #include <string.h>
 #include <Print.h>
 #include <Arduino.h>
+#include "game_profile_store.h"
 
 typedef struct
 {
-    const char *nameSubstr; // ROM filename substring (case-sensitive match)
-    uint16_t healthAddr;    // NES RAM address $0000-$07FF
+    const char *nameSubstr;
+    uint16_t healthAddr;
 } GameProfile;
 
-// Database — must be defined BEFORE findGameProfile()
+/* 内置回退表（原样保留） */
 static const GameProfile gameProfiles[] = {
-    // === Platformers ===
-    {"Super Mario USA (Japan)", 0x075A},                     // Lives (decrements on death)
-    {"Contra (U) ", 0x0032},                                 // Lives
-    {"Mega Man", 0x006A},                                    // Health bar (0-28, per-hit)
-    {"Mega Man 2", 0x006A},                                  // Health bar
-    {"Mega Man 3", 0x006A},                                  // Health bar
-    {"Mega Man 4", 0x006A},                                  // Health bar
-    {"Mega Man 5", 0x006A},                                  // Health bar
-    {"Mega Man 6", 0x006A},                                  // Health bar
-    {"Castlevania", 0x0006},                                 // Health (0x00-0x10)
-    {"Ninja Gaiden", 0x0065},                                // HP (0-16)
-    {"Duck Tales", 0x0B5A},                                  // Health
-    {"Battletoads", 0x0057},                                 // Lives (0-3)
-    {"Ghosts 'n Goblins", 0x0050},                           // Health / lives
-    {"Double Dragon III - The Sacred Stones (USA)", 0x0018}, // Lives
-    {"Bubble Bobble", 0x001C},                               // HP
-    {"Batman", 0x00B7},                                      // Health (0-8)
-    {"Chip  n Dale Rescue Rangers (U) ",0x0570}, // Health
-    {"Chip  n Dale Rescue Rangers 2 (U) ",0x0570},           // Health
-    {"Toki (U) ", 0x00B7},                                   // Health
-    {"Little Nemo - The Dream Master (U) ", 0x00B7},        // Health
-    {"Adventure Island", 0x00B7},                            // Health
-    {"Adventure Island II", 0x00B7},                         // Health
-    {"Adventure Island III", 0x00B7},                        // Health
-
-    // === Action / Adventure ===
-    {"Zelda II - The Adventure of Link (USA)", 0x00F4},                        // Hearts × 2 (0-20)
-    {"Metroid", 0x0C46},                                                       // Energy (0-190)
-    {"Punch-Out!!", 0x004A},                                                   // Health
-    {"Teenage Mutant Ninja Turtles III - The Manhattan Project (U) ", 0x0024}, // Health
-    {"Kirby's Adventure (USA)", 0x0597},                                       // Health (current, count by 8)
-    {"Shadow of the Ninja (U) ", 0x0018},                                      // Health
-    {"Kid Icarus", 0x00A6},                                                    // Health
-    {"Ice Climber", 0x0020},                                                   // Lives (P1)
-
-    // === Shooters ===
-    {"Gradius", 0x0020},      // Lives
-    {"Life Force", 0x006A},   // Lives
-    {"Star Wars (U) ",0x0729},  // Health
-
-    // === RPG ===
-    {"Final Fantasy", 0x001D}, // HP in battle (single character)
-    {NULL, 0} // Sentinel — must be last
+    {"Super Mario USA (Japan)", 0x075A},
+    {"Contra (U) ",              0x0032},
+    {"Mega Man",                 0x006A},
+    {"Mega Man 2",               0x006A},
+    {"Mega Man 3",               0x006A},
+    {"Mega Man 4",               0x006A},
+    {"Mega Man 5",               0x006A},
+    {"Mega Man 6",               0x006A},
+    {"Castlevania",              0x0006},
+    {"Ninja Gaiden",             0x0065},
+    {"Duck Tales",               0x0B5A},
+    {"Battletoads",              0x0057},
+    {"Ghosts 'n Goblins",        0x0050},
+    {"Double Dragon III - The Sacred Stones (USA)", 0x0018},
+    {"Bubble Bobble",            0x001C},
+    {"Batman",                   0x00B7},
+    {"Chip  n Dale Rescue Rangers (U) ",  0x0570},
+    {"Chip  n Dale Rescue Rangers 2 (U) ",0x0570},
+    {"Toki (U) ",                0x00B7},
+    {"Little Nemo - The Dream Master (U) ", 0x00B7},
+    {"Adventure Island",         0x00B7},
+    {"Adventure Island II",      0x00B7},
+    {"Adventure Island III",     0x00B7},
+    {NULL, 0}
 };
+
+/* 静态转发结果 —— 用于返回 SD 命中的地址 */
+static GameProfile s_sdProfileHolder;
 
 static inline const GameProfile *findGameProfile(const char *romFilename)
 {
-    if (!romFilename)
-        return NULL;
-    for (int i = 0; gameProfiles[i].nameSubstr != NULL; i++)
-    {
-        if (strstr(romFilename, gameProfiles[i].nameSubstr) != NULL)
-        {
-            Serial.println("[OSD] Found game profile: " + String(gameProfiles[i].nameSubstr) +
-                           " -> healthAddr=0x" + String(gameProfiles[i].healthAddr, HEX));
+    if (!romFilename) return NULL;
+
+    /* 1) 先查 SD 卡自学表 */
+    const GpsEntry* e = gps_find(romFilename);
+    if (e) {
+        s_sdProfileHolder.nameSubstr = e->nameSubstr;
+        s_sdProfileHolder.healthAddr = e->hpAddr;
+        Serial.print("[OSD] Profile(SD): ");
+        Serial.print(e->nameSubstr);
+        Serial.print(" -> 0x");
+        Serial.println(e->hpAddr, HEX);
+        return &s_sdProfileHolder;
+    }
+
+    /* 2) 回退到内置表 */
+    for (int i = 0; gameProfiles[i].nameSubstr != NULL; i++) {
+        if (strstr(romFilename, gameProfiles[i].nameSubstr) != NULL) {
+            Serial.print("[OSD] Profile(builtin): ");
+            Serial.print(gameProfiles[i].nameSubstr);
+            Serial.print(" -> 0x");
+            Serial.println(gameProfiles[i].healthAddr, HEX);
             return &gameProfiles[i];
         }
     }
     return NULL;
 }
 
-#endif // GAME_PROFILES_H
+#endif

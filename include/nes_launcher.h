@@ -37,7 +37,7 @@ private:
     uint16_t _screenW, _screenH;
     volatile bool _running;
     volatile uint8_t _padState;
-    TaskHandle_t _emuTaskHandle;
+    volatile TaskHandle_t _emuTaskHandle;
     String _romPath;
 
     static void _emuTaskFunc(void* param);

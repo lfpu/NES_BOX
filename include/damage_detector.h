@@ -20,6 +20,8 @@ extern "C" {
 // Inter-core flag: Core 1 sets on damage, Core 0 reads & resets
 extern volatile bool g_damageDetected;
 
+// Call once when loading a new ROM (before emulation starts)
+void damageDetector_setRom(const char* romName);
 // Call once per frame from scaleAndPush() on Core 1
 void damageDetector_update(void);
 

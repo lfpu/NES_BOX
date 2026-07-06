@@ -91,7 +91,14 @@ static RingbufHandle_t g_audioRing = nullptr;
 static TaskHandle_t g_audioTask = nullptr;
 static volatile bool g_audioTaskRun = false;
 
+#ifdef HP_SCAN_ENABLE
+static TaskHandle_t g_hpScanTask = nullptr;
+static volatile bool g_hpScanTaskRun = false;
+#endif
+
 static esp_timer_handle_t g_audioTimer = nullptr;
+static volatile bool g_osdCleanupInProgress = false;
+static volatile bool g_osdCleanupDone = false;
 
 // 分数累加器
 static double g_audioFracAccum = 0.0;
@@ -119,8 +126,23 @@ extern "C" void *mem_alloc(int size, bool prefer_fast_memory)
 {
     if (prefer_fast_memory)
     {
-        return heap_caps_malloc(size, MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL);
+        if (size > 32768) {
+            void *p = ps_malloc(size);
+            if (p)
+                return p;
+        }
+
+        void *p = heap_caps_malloc(size, MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL);
+        if (p)
+            return p;
+
+        p = ps_malloc(size);
+        if (p)
+            return p;
+
+        return heap_caps_malloc(size, MALLOC_CAP_8BIT);
     }
+
     void *p = ps_malloc(size);
     if (!p)
     {
@@ -155,10 +177,15 @@ static int osd_vid_init(int width, int height)
 {
     (void)width;
     (void)height;
+#ifdef HP_SCAN_ENABLE
+    Serial.println("[HP_SCAN] runtime disabled during gameplay to preserve video");
+#endif
     return 0;
 }
 
-static void osd_vid_shutdown(void) {}
+static void osd_vid_shutdown(void)
+{
+}
 
 static int osd_vid_set_mode(int width, int height)
 {
@@ -232,6 +259,19 @@ static viddriver_t nes_vid_driver = {
 // ★ 改回整屏缓冲（PSRAM），不再是单行
 // static uint16_t *g_rgb565Buf = nullptr;
 
+#ifdef HP_SCAN_ENABLE
+static void hp_scan_task(void *arg)
+{
+    (void)arg;
+    while (g_hpScanTaskRun)
+    {
+        hp_scan_update();
+        vTaskDelay(pdMS_TO_TICKS(2000));
+    }
+    vTaskDelete(NULL);
+}
+#endif
+
 static void scaleAndPush(bitmap_t *bmp)
 {
     if (!bmp || !g_amoled)
@@ -273,13 +313,12 @@ static void scaleAndPush(bitmap_t *bmp)
     }
 
     // ★ 一次性推送整屏（和原来 256x240 时一样的调用方式）
-    // Damage detection + vibration motor (both on Core 1, same I2C bus)
+    // HP scan runtime is intentionally disabled during gameplay to keep the display path stable.
+#ifdef HP_SCAN_ENABLE
+    // Skip damage/motor updates while HP scan is enabled to avoid interfering with the emulator frame path.
+#else
     damageDetector_update();
     motorController_update();
-
-    // HP address scanner (debug: enable with -DHP_SCAN_ENABLE in platformio.ini)
-#ifdef HP_SCAN_ENABLE
-    hp_scan_update();
 #endif
 
     g_amoled->setAddrWindow(0, 0, SCREEN_W - 1, SCREEN_H - 1);
@@ -621,9 +660,17 @@ static uint32_t g_prevPad = 0xFFFFFFFF;
 
 extern "C" void osd_getinput(void)
 {
-    // 1. Quit request
+    // 1. Quit request — stop audio BEFORE firing quit event
+    // main_quit() → nes_destroy() frees APU, so we must prevent
+    // the 120Hz audio timer from calling g_apuProcess() into freed memory
     if (g_quitRequested)
     {
+        if (g_audioTimer) {
+            esp_timer_stop(g_audioTimer);
+            esp_timer_delete(g_audioTimer);
+            g_audioTimer = nullptr;
+        }
+        g_apuProcess = nullptr;
         event_t evh = event_get(event_quit);
         if (evh)
             evh(0);
@@ -683,6 +730,14 @@ extern "C" void osd_getinput(void)
                 else if (ty >= 255 && ty <= 310 && tx >= 320 && tx <= 490)
                 {
                     g_paused = false;
+                    // ★ 先停音频再退出：main_quit() → nes_destroy() 会释放 APU，
+                    // 必须赶在 120Hz 音频定时器回调 g_apuProcess() 之前停掉它
+                    if (g_audioTimer) {
+                        esp_timer_stop(g_audioTimer);
+                        esp_timer_delete(g_audioTimer);
+                        g_audioTimer = nullptr;
+                    }
+                    g_apuProcess = nullptr;
                     g_quitRequested = true;
                     event_t e = event_get(event_quit);
                     if (e) e(INP_STATE_MAKE);
@@ -729,6 +784,14 @@ extern "C" void osd_getinput(void)
             else if (millis() - quitTimer >= 300)
             {
                 quitTimer = 0;
+                // ★ 先停音频再退出：防止 APU 被 nes_destroy() 释放后
+                // 120Hz 音频定时器回调 g_apuProcess() 访问野指针
+                if (g_audioTimer) {
+                    esp_timer_stop(g_audioTimer);
+                    esp_timer_delete(g_audioTimer);
+                    g_audioTimer = nullptr;
+                }
+                g_apuProcess = nullptr;
                 g_quitRequested = true;
                 event_t evh = event_get(event_quit);
                 if (evh)
@@ -1180,48 +1243,50 @@ static void nes_audio_init()
 // ==================================================================
 static void nes_audio_deinit()
 {
-    // 先停定时器
-    if (g_audioTimer)
-    {
+    // 1) 先停 timer（阻止再产生数据）
+    if (g_audioTimer) {
         esp_timer_stop(g_audioTimer);
         esp_timer_delete(g_audioTimer);
         g_audioTimer = nullptr;
     }
 
-    // 停 consumer task
+    // 2) 通知 task 退出并等它自己走完
+    // ★ 关键：把 g_audioTask 一次性读到局部变量然后立即清空全局指针。
+    // 音频 task 在 Core 0 退出时也会写 g_audioTask = NULL，
+    // 如果 Core 1 多次读取 g_audioTask，可能在两次读取之间被 Core 0 置 NULL，
+    // 导致 eTaskGetState(NULL) → assert 崩溃。
     g_audioTaskRun = false;
-    if (g_audioTask)
-    {
-        for (int i = 0; i < 30 && g_audioTask; i++)
-        {
+    TaskHandle_t audioTask = g_audioTask;
+    g_audioTask = nullptr;  // 抢先清空，避免 Core 0 的音频 task 和 Core 1 竞争
+    if (audioTask) {
+        for (int i = 0; i < 100; i++) {
+            if (eTaskGetState(audioTask) == eDeleted) break;
             vTaskDelay(pdMS_TO_TICKS(10));
+        }
+        // 兜底：如果没有优雅退出，强杀
+        if (eTaskGetState(audioTask) != eDeleted) {
+            vTaskDelete(audioTask);
         }
     }
 
-    if (g_audioRing)
-    {
+    // 3) 清 I2S DMA（驱动本身由 AudioPlayer::init() 负责卸载/重装）
+    // ★ 不能在这里 i2s_driver_uninstall：因为旧的 Audio 对象析构时
+    // ~Audio() → stopSong() → i2s_zero_dma_buffer() 需要 I2S 驱动仍然安装
+    i2s_zero_dma_buffer(I2S_NUM_0);
+
+    // 4) 释放 ringbuffer 和临时 buf
+    if (g_audioRing) {
         vRingbufferDelete(g_audioRing);
         g_audioRing = nullptr;
     }
-
-    if (g_audioMonoBuf)
-    {
-        free(g_audioMonoBuf);
+    if (g_audioMonoBuf) {
+        heap_caps_free(g_audioMonoBuf);
         g_audioMonoBuf = nullptr;
     }
-
-    if (g_audioStereoBuf)
-    {
-        free(g_audioStereoBuf);
+    if (g_audioStereoBuf) {
+        heap_caps_free(g_audioStereoBuf);
         g_audioStereoBuf = nullptr;
     }
-
-    g_apuProcess = nullptr;
-    g_audioFracAccum = 0.0;
-
-    i2s_zero_dma_buffer(I2S_NUM_0);
-
-    Serial.println("[Audio] Deinitialized");
 }
 
 // ==================================================================
@@ -1335,6 +1400,10 @@ extern "C" void nofrendo_osd_setup(Ws_AMOLED *amoled, uint16_t w, uint16_t h)
     g_screenW = w;
     g_screenH = h;
     g_prevPad = 0xFFFFFFFF;
+    g_osdCleanupInProgress = false;
+    g_osdCleanupDone = false;
+    g_quitRequested = false;
+    g_paused = false;
 
     // ★ 整屏缓冲，PSRAM
     if (!g_rgb565Buf)
@@ -1354,6 +1423,7 @@ extern "C" void nofrendo_osd_setup(Ws_AMOLED *amoled, uint16_t w, uint16_t h)
 
     nes_audio_init();
 
+
     Serial.printf("[OSD] Setup: %dx%d, NES %dx%d -> %dx%d\n",
                   g_screenW, g_screenH, NES_W, NES_H, SCREEN_W, SCREEN_H);
 }
@@ -1363,25 +1433,46 @@ extern "C" void nofrendo_osd_setup(Ws_AMOLED *amoled, uint16_t w, uint16_t h)
 // ==================================================================
 extern "C" void nofrendo_osd_cleanup(void)
 {
-    if (g_nesTimer)
-    {
+    if (g_osdCleanupInProgress || g_osdCleanupDone) {
+        return;
+    }
+    g_osdCleanupInProgress = true;
+
+    // 1) 停 NES 帧定时器
+    if (g_nesTimer) {
         esp_timer_stop(g_nesTimer);
         esp_timer_delete(g_nesTimer);
         g_nesTimer = nullptr;
     }
 
+    // 2) ★关键：先停音频，防止后续野指针回调
     nes_audio_deinit();
 
-    // 不释放 PSRAM 缓冲区——复用已分配内存，避免触发堆完整
-    // 性检查（DRAM 堆可能被 nofrendo 误写入 0x8f 污染）
-    // if (g_rgb565Buf) { free(g_rgb565Buf); g_rgb565Buf = nullptr; }
-    // if (g_fbData) { free(g_fbData); g_fbData = nullptr; }
+    // 3) 释放视频缓冲
+    if (g_fbData) {
+        heap_caps_free(g_fbData);
+        g_fbData = nullptr;
+    }
+    if (g_rgb565Buf) {
+        heap_caps_free(g_rgb565Buf);
+        g_rgb565Buf = nullptr;
+    }
 
-    g_amoled = nullptr;
-    g_paused = false;
-    g_quitRequested = false;
-    g_touchStartY = -1;
+    // 4) 清 APU 回调，避免任何残留调用
+    g_apuProcess = nullptr;
 
+    // 5) 复位杂项状态
+    g_paused         = false;
+    g_quitRequested  = false;
+    g_padState       = 0;
+    g_prevPad        = 0xFFFFFFFF;
+    g_touchStartY    = -1;
+    g_touchStartX    = 0;
+    g_audioFracAccum = 0.0;
+    g_audioDropCount = 0;
+    g_audioWriteFailCount = 0;
 
-    Serial.println("[OSD] Cleanup complete");
+    g_osdCleanupDone = true;
+    g_osdCleanupInProgress = false;
+    Serial.println("[OSD] full cleanup done");
 }

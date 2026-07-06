@@ -459,7 +459,7 @@ void GameUI::_createCarouselView()
 
     // 左右箭头
     lv_obj_t *btnLeft = lv_btn_create(_carouselContainer);
-    lv_obj_set_size(btnLeft, 40, 40);
+    lv_obj_set_size(btnLeft, 40, 60);
     lv_obj_set_style_radius(btnLeft, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_bg_color(btnLeft, lv_color_hex(0x202020), 0);
     lv_obj_set_style_bg_opa(btnLeft, LV_OPA_40, 0);
@@ -475,7 +475,7 @@ void GameUI::_createCarouselView()
 
     // 右箭头
     lv_obj_t *btnRight = lv_btn_create(_carouselContainer);
-    lv_obj_set_size(btnRight, 40, 40);
+    lv_obj_set_size(btnRight, 40, 60);
     lv_obj_set_style_radius(btnRight, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_bg_color(btnRight, lv_color_hex(0x202020), 0);
     lv_obj_set_style_bg_opa(btnRight, LV_OPA_40, 0);

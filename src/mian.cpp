@@ -362,6 +362,15 @@ void initLVGL()
 // ===================== 释放LVGL资源 =====================
 void deinitLVGL()
 {
+    // ★ 必须先把 display 从 LVGL 中移除，再释放 framebuffer。
+    // 否则 initLVGL() 每次都会注册新的 display，旧的 display 仍然指向
+    // 已释放的 framebuffer → lv_timer_handler() 刷新时 use-after-free → 堆损坏。
+    lv_disp_t *disp = lv_disp_get_default();
+    if (disp) {
+        lv_obj_clean(lv_scr_act());   // 先清空所有 UI 对象
+        lv_disp_remove(disp);         // 再移除 display（自动清理 screen/indev）
+    }
+
     if (buf1)
     {
         free(buf1);
@@ -610,6 +619,9 @@ void returnToMenu()
         Serial.println("[APP] Netplay session ended");
         // 保留 init，仅停止当前会话
     }
+
+    // ★ 新增：把 AudioPlayer 重新拉起来
+    audioPlayer.reinit();
 
     // 重新初始化LVGL和UI
     initLVGL();

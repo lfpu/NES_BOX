@@ -3,6 +3,9 @@
 
 #include <stdint.h>
 
+// #define LV_DISP_DEF_REFR_PERIOD 10 
+// #define LV_USE_PERF_MONITOR 1
+// #define LV_USE_MEM_MONITOR 1
 /* 基本配置 */
 #define LV_COLOR_DEPTH          16
 #define LV_COLOR_16_SWAP        1
@@ -96,9 +99,6 @@
 #define LV_USE_PNG          1
 
 #endif /* LV_CONF_H */
-
-/* 确保你的 lv_conf.h 中包含以下配置 */
-
 
 /* 内存 - 使用PSRAM */
 

@@ -1,85 +1,108 @@
-/*
- * damage_detector.cpp — Per-frame NES RAM health-value monitor (Core 1)
- *
- * Called from scaleAndPush() every frame (~60 fps).
- * On the first frame: matches ROM filename against game_profiles.h database,
- *   records the current health value as baseline.
- * On subsequent frames: compares current value against previous; if it decreased,
- *   sets g_damageDetected = true (Core 0 reads this to pulse the motor).
- */
-
 #include "damage_detector.h"
 #include "game_profiles.h"
+#include "game_profile_store.h"
+#include "hp_scan.h"
 
 extern "C" {
-#include <nes/nes.h>       // nes_getcontextptr(), nes_t
+#include <nes/nes.h>
 #include <noftypes.h>
 }
-
 #include <Arduino.h>
 
-// === Inter-core flag: set by Core 1, read & cleared by Core 0 ===
 volatile bool g_damageDetected = false;
 
-// === Per-session state (Core 1 only) ===
 static const GameProfile *s_profile = NULL;
 static uint8_t            s_prevValue = 0;
 static bool               s_initialized = false;
+static char               s_romName[96] = {0};
 
-// ===================================================================
-void damageDetector_reset(void)
+/* 新增：切 ROM 时 launcher 调这个，把 ROM 文件名传下来 */
+extern "C" void damageDetector_setRom(const char* romName)
 {
-    g_damageDetected = false;
-    s_profile = NULL;
-    s_prevValue = 0;
-    s_initialized = false;
+    if (romName) {
+        strncpy(s_romName, romName, sizeof(s_romName)-1);
+        s_romName[sizeof(s_romName)-1] = 0;
+    } else {
+        s_romName[0] = 0;
+    }
+    gps_load();                       // 确保 SD 已加载
+    hp_scan_set_rom(s_romName);       // 通知扫描器
+    damageDetector_reset();
 }
 
-// ===================================================================
-void damageDetector_update(void)
+extern "C" void damageDetector_reset(void)
 {
-    // --- First-call initialization ---
+    s_initialized = false;
+    s_profile     = NULL;
+    s_prevValue   = 0;
+    g_damageDetected = false;
+}
+
+extern "C" void damageDetector_update(void)
+{
+#ifdef HP_SCAN_ENABLE
+    return;
+#endif
     if (!s_initialized) {
         s_initialized = true;
 
-        nes_t *ctx = nes_getcontextptr();
-        if (!ctx || !ctx->rominfo || !ctx->rominfo->filename[0]) {
-            // No ROM loaded yet or ROM info unavailable
-            return;
+        /* 1) 先看 hp_scan 是否已经学到（SD 里有） */
+        uint16_t learned = hp_scan_get_learned_addr();
+        static GameProfile learnedProf;
+        if (learned) {
+            learnedProf.nameSubstr = s_romName;
+            learnedProf.healthAddr = learned;
+            s_profile = &learnedProf;
+        } else {
+            /* 2) 再走 SD 优先 / 内置回退 的原有逻辑 */
+            s_profile = findGameProfile(s_romName);
         }
 
-        // Extract basename from full path (strip directory)
-        const char *fname = ctx->rominfo->filename;
-        const char *sep   = strrchr(fname, '/');
-        if (!sep) sep = strrchr(fname, '\\');
-        const char *base  = sep ? sep + 1 : fname;
-
-        s_profile = findGameProfile(base);
         if (s_profile) {
-            s_prevValue = ctx->cpu->mem_page[0][s_profile->healthAddr];
-            // Serial.printf("[DAMAGE] Game: %s  addr=$%04X  initial=%d\n",
-            //               s_profile->nameSubstr, s_profile->healthAddr, s_prevValue);
+            uint8_t *ram = nes_getcontextptr()->cpu->mem_page[0];
+            if (!ram || s_profile->healthAddr >= 0x800) {
+                Serial.printf("[DMG] invalid HP addr $%04X, disabling\n", s_profile->healthAddr);
+                s_profile = NULL;
+                s_prevValue = 0;
+            } else {
+                s_prevValue = ram[s_profile->healthAddr];
+                Serial.printf("[DMG] armed at $%04X baseline=%u\n",
+                              s_profile->healthAddr, s_prevValue);
+            }
+        } else {
+            Serial.println("[DMG] no profile — waiting for hp_scan to learn...");
         }
-        return;  // Skip detection this frame (no baseline yet)
+        return;
     }
 
-    // --- Per-frame detection ---
-    if (!s_profile) return;   // No matching profile
-
-    nes_t *ctx = nes_getcontextptr();
-    if (!ctx || !ctx->cpu || !ctx->cpu->mem_page[0]) return;
-
-    uint8_t currentValue = ctx->cpu->mem_page[0][s_profile->healthAddr];
-
-    // Damage = value decreased AND previous was non-zero
-    // (prevents false trigger when value transitions 0→0 on first read)
-    bool damageThisFrame = (currentValue < s_prevValue && s_prevValue > 0);
-    if (damageThisFrame) {
-        g_damageDetected = true;
-        // Print BEFORE updating s_prevValue so prev shows the real old value
-        Serial.printf("[DAMAGE] addr=$%04X  %d -> %d  damage=YES\n",
-                      s_profile->healthAddr, s_prevValue, currentValue);
+    /* 未知 ROM：每 60 帧回头看下 hp_scan 有没有刚学到，学到就立即启用 */
+    if (!s_profile) {
+        static int recheck = 0;
+        if ((++recheck) >= 60) {
+            recheck = 0;
+            uint16_t learned = hp_scan_get_learned_addr();
+            if (learned) {
+                static GameProfile lp;
+                lp.nameSubstr = s_romName;
+                lp.healthAddr = learned;
+                s_profile = &lp;
+                uint8_t *ram = nes_getcontextptr()->cpu->mem_page[0];
+                if (ram && learned < 0x800) {
+                    s_prevValue = ram[learned];
+                }
+                Serial.printf("[DMG] hot-armed at $%04X\n", learned);
+            }
+        }
+        return;
     }
 
-    s_prevValue = currentValue;
+    uint8_t *ram = nes_getcontextptr()->cpu->mem_page[0];
+    if (!ram || s_profile->healthAddr >= 0x800) return;
+
+    uint8_t cur = ram[s_profile->healthAddr];
+    if (cur < s_prevValue) {
+        uint8_t diff = s_prevValue - cur;
+        if (diff <= 8) g_damageDetected = true;   /* 忽略死亡瞬间的暴降 */
+    }
+    s_prevValue = cur;
 }

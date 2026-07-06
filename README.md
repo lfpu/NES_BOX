@@ -3,6 +3,8 @@
 
 基于 Waveshare ESP32-S3-Touch-AMOLED-2.41 开发板的 NES 模拟器掌机，支持 600×450 AMOLED 全屏显示、LVGL 游戏启动器 UI、I2S 音频输出、ESP-NOW 双人联机、**TCA9554 震动马达反馈**。
 
+<img src="./3D/Designer.png" width=500>
+
 ## BOM（物料清单）
 
 | 物料 | 型号/规格 | 数量 | 用途 |
@@ -14,7 +16,7 @@
 | 续流二极管 | 1N4148 / 1N4007 | 1 | 保护电路（反接马达两端） |
 | 电阻 | 1kΩ（基极限流） | 1 | 三极管基极电阻 |
 | 电阻 | 10kΩ（下拉） | 1 | 确保关断时基极为低 |
-| SD 卡 | MicroSD，FAT32，≥4GB | 1 | 存储游戏 ROM 和音效 |
+| SD 卡 | MicroSD，FAT32，≥1GB | 1 | 存储游戏 ROM 和音效 |
 | 扬声器 | 8Ω 1-3W | 1 | I2S 功放输出 |
 | 物理按键 | 6×6mm 轻触开关 | 9 | UP/DOWN/LEFT/RIGHT/A/B/SELECT/START/QUIT |
 | I2S 功放 | MAX98357A 模块 | 1 | 音频放大 |
@@ -56,7 +58,7 @@ GND ──────────────────────── E
 - 电池电量显示（菜单栏 + 游戏内覆盖）
 - **震动反馈：玩家受伤/掉血时马达振动 180ms，连击延长**
 - **30+ 款游戏预设健康值地址，自动匹配 ROM 文件名**
-- **HP 扫描调试工具（`-DHP_SCAN_ENABLE`），支持自定义新游戏**
+- **HP 扫描调试工具（`-DHP_SCAN_ENABLE`），支持自定义新游戏，支持自动扫描HP的RAM地址**
 - 长按电源键开机
 - 按reset键关机
 
@@ -74,6 +76,10 @@ GND ──────────────────────── E
 - 清除游戏缓存（重新扫描游戏）
 - 设置持久化（`/game/settings.cfg`）
 - 游戏内设置，下滑屏幕弹出设置框
+
+### HP RAM 地址扫描
+- plateformio.ini 打开-DHP_SCAN_ENABLE 进入游戏正常玩后会自动采集玩家受伤害和死亡的数据进行HP地址跟踪
+- 最终写入 (`/game/game_profile.cfg`)
 
 ### 联机
 - ESP-NOW 无线通信
@@ -112,8 +118,9 @@ AMOLedNES/
 │   ├── motor_controller.cpp  # 震动马达驱动（TCA9554 I2C）
 │   └── hp_scan.c             # HP 地址扫描工具（调试用）
 ├── include/
-│   ├── game_ui.h
-│   ├── nes_launcher.h
+│   ├── game_ui.h             #LVGL UI
+│   ├── nes_launcher.h        # NES 启动
+|   ├── game_profile_store.H  #HP RAM 扫描
 │   ├── touch_gamepad.h
 │   ├── damage_detector.h     # 伤害检测接口
 │   ├── motor_controller.h    # 马达控制接口
@@ -149,10 +156,10 @@ AMOLedNES/
 | BTN B | 39 | |
 | BTN SELECT | 40 | |
 | BTN START | 41 | |
-| BTN QUIT | 46 | 游戏中退回到菜单 |
+| BTN QUIT | 43 | 游戏中退回到菜单 |
 | I2S BCLK | 45 | MAX98357A |
 | I2S LRC | 42 | MAX98357A |
-| I2S DOUT | 20 | MAX98357A |
+| I2S DOUT | 46 | MAX98357A |
 | I2C SDA | 47 | TCA9554 + PMU / Touch |
 | I2C SCL | 48 | TCA9554 + PMU / Touch |
 | MOTOR (TCA9554 P7) | EXIO bit 7 | 震动马达（通过 TCA9554 I2C 扩展） |
@@ -166,7 +173,7 @@ AMOLedNES/
 Core 1（模拟器，~60fps）:
   scaleAndPush()
     ├── damageDetector_update()
-    │     ├── 首帧：匹配 ROM 文件名 → game_profiles.h → 确定健康值地址
+    │     ├── 首帧：匹配 ROM 文件名 → game_profiles.h或SD：/game/game_profile.cfg → 确定健康值地址
     │     ├── 每帧：读取 nes_getcontextptr()->cpu->mem_page[0][addr]
     │     └── 值下降 → g_damageDetected = true
     └── motorController_update()
