@@ -494,7 +494,7 @@ void startNESGame(const String &romPath)
 
     // ====== 联机握手（在释放 LVGL 前显示 UI）======
     bool netplayActive = false;
-    g_netplayWanted = false; //////////////////////////////////////////暂时关闭联机
+    //g_netplayWanted = false; //////////////////////////////////////////暂时关闭联机
     if (g_netplayWanted)
     {
         // 显示"等待 Player 2"提示
@@ -509,7 +509,7 @@ void startNESGame(const String &romPath)
         lv_obj_align(title, LV_ALIGN_CENTER, 0, -50);
 
         lv_obj_t *msg = lv_label_create(scr);
-        lv_label_set_text(msg, "Waiting for Player 2...\n(30s timeout)");
+        lv_label_set_text(msg, "Waiting for Player join...\n(30s timeout)");
         lv_obj_set_style_text_font(msg, &lv_font_montserrat_18, 0);
         lv_obj_set_style_text_color(msg, lv_color_hex(0xFFFFFF), 0);
         lv_obj_set_style_text_align(msg, LV_TEXT_ALIGN_CENTER, 0);

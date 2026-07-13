@@ -1535,7 +1535,7 @@ void GameUI::_createSettingsPanel()
     if (g_netplayWanted)
         lv_obj_add_state(npSw, LV_STATE_CHECKED);
     lv_obj_add_event_cb(npSw, _netplayCb, LV_EVENT_VALUE_CHANGED, this);
-    lv_obj_add_state(npSw, LV_STATE_DISABLED); /// 暂停使用
+    //lv_obj_add_state(npSw, LV_STATE_DISABLED); /// 暂停使用
 
     // ---- 屏幕旋转 ----
     lv_obj_t *rotLabel = lv_label_create(card);
