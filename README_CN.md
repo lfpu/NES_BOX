@@ -4,7 +4,7 @@
 
 基于 Waveshare ESP32-S3-Touch-AMOLED-2.41 开发板的 NES 模拟器掌机，支持 600×450 AMOLED 全屏显示、LVGL 游戏启动器 UI、I2S 音频输出、ESP-NOW 双人联机、**TCA9554 震动马达反馈**。
 
-<img src="./3D/Designer.png" width=500>
+<img src="./3D/demo.jpg" width=500>
 
 ## BOM（物料清单）
 

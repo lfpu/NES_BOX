@@ -4,7 +4,7 @@
 
 A NES emulator handheld based on the Waveshare ESP32-S3-Touch-AMOLED-2.41 dev board, featuring 600×450 AMOLED full-screen display, LVGL game launcher UI, I2S audio output, ESP-NOW 2-player netplay, and **TCA9554 vibration motor feedback**.
 
-<img src="./3D/Designer.png" width=500>
+<img src="./3D/demo.jpg" width=500>
 
 ## BOM (Bill of Materials)
 
