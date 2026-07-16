@@ -2,7 +2,7 @@
 
 [中文](README_CN.md) | [English](README_EN.md)
 
-<img src="./3D/Designer.png" width=500>
+<img src="./3D/demo.jpg" width=500>
 
 A NES emulator handheld based on the **Waveshare ESP32-S3-Touch-AMOLED-2.41** dev board.
 
